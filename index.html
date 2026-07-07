@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sensor Traktor · S31B-NB</title>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  /* ---- CONFIG DE COLORES (validados con la skill dataviz) ---- */
+  :root{
+    --bg:#f4f5f3; --surface:#ffffff; --surface-2:#fcfcfb;
+    --ink:#212529; --ink-2:#495057; --muted:#868e96; --border:#e9ecef;
+    --temp:#E8590C; --hum:#1971C2;
+    --grid:#eceef0; --ok:#2f9e44; --warn:#e8590c; --bad:#e03131;
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+  }
+  :root[data-theme="dark"]{
+    --bg:#141514; --surface:#1f201e; --surface-2:#1a1a19;
+    --ink:#e9ecef; --ink-2:#c1c2c5; --muted:#909296; --border:#2c2e2b;
+    --temp:#E8590C; --hum:#339AF0;
+    --grid:#2a2c29; --ok:#51cf66; --warn:#ff922b; --bad:#ff6b6b;
+    --shadow:0 1px 3px rgba(0,0,0,.3);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#141514; --surface:#1f201e; --surface-2:#1a1a19;
+      --ink:#e9ecef; --ink-2:#c1c2c5; --muted:#909296; --border:#2c2e2b;
+      --temp:#E8590C; --hum:#339AF0;
+      --grid:#2a2c29; --ok:#51cf66; --warn:#ff922b; --bad:#ff6b6b;
+      --shadow:0 1px 3px rgba(0,0,0,.3);
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; line-height:1.4;
+    padding:env(safe-area-inset-top) 0 40px;
+  }
+  .wrap{max-width:780px; margin:0 auto; padding:16px}
+  header{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:6px 2px 18px}
+  h1{font-size:1.15rem; font-weight:650; margin:0; letter-spacing:-.01em}
+  .sub{color:var(--muted); font-size:.8rem; margin-top:2px}
+  .spacer{flex:1}
+  .pill{display:inline-flex; align-items:center; gap:7px; font-size:.78rem; font-weight:600;
+    padding:5px 11px; border-radius:999px; background:var(--surface); box-shadow:var(--shadow); white-space:nowrap}
+  .dot{width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none}
+  .pill.live .dot{background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
+  .pill.down .dot{background:var(--bad)}
+  .pill.wait .dot{background:var(--warn); animation:pulse 1.2s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .icon-btn{border:none; background:var(--surface); color:var(--ink-2); box-shadow:var(--shadow);
+    width:34px; height:34px; border-radius:10px; font-size:1rem; cursor:pointer}
+
+  .tiles{display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:16px}
+  @media(min-width:560px){.tiles{grid-template-columns:repeat(4,1fr)}}
+  .tile{background:var(--surface); border-radius:16px; padding:15px 16px; box-shadow:var(--shadow);
+    position:relative; overflow:hidden}
+  .tile::before{content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--accent,var(--muted))}
+  .tile .lbl{font-size:.72rem; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.03em}
+  .tile .val{font-size:1.9rem; font-weight:700; letter-spacing:-.02em; margin-top:6px; font-variant-numeric:tabular-nums}
+  .tile .val small{font-size:.85rem; font-weight:600; color:var(--ink-2); margin-left:3px}
+  .tile .note{font-size:.72rem; color:var(--muted); margin-top:3px}
+  .tile.temp{--accent:var(--temp)} .tile.hum{--accent:var(--hum)}
+
+  .card{background:var(--surface); border-radius:16px; padding:14px 14px 8px; box-shadow:var(--shadow); margin-bottom:14px}
+  .card h2{font-size:.85rem; font-weight:600; margin:2px 4px 10px; color:var(--ink-2); display:flex; align-items:center; gap:8px}
+  .swatch{width:10px; height:10px; border-radius:3px; flex:none}
+  .chart-box{position:relative; height:200px}
+
+  details.table-card{background:var(--surface); border-radius:16px; box-shadow:var(--shadow); padding:4px 4px}
+  summary{cursor:pointer; padding:12px 14px; font-size:.85rem; font-weight:600; color:var(--ink-2); list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary::after{content:"⌄"; float:right; color:var(--muted)}
+  .tbl-scroll{overflow-x:auto; padding:0 6px 8px}
+  table{width:100%; border-collapse:collapse; font-size:.82rem; font-variant-numeric:tabular-nums}
+  th,td{text-align:right; padding:7px 10px; border-bottom:1px solid var(--border); white-space:nowrap}
+  th:first-child,td:first-child{text-align:left; color:var(--ink-2)}
+  th{color:var(--muted); font-weight:600; font-size:.72rem; text-transform:uppercase; letter-spacing:.03em}
+  tbody tr:last-child td{border-bottom:none}
+  footer{text-align:center; color:var(--muted); font-size:.72rem; margin-top:20px; padding:0 10px; word-break:break-word}
+  code{background:var(--surface-2); padding:1px 5px; border-radius:5px; font-size:.9em}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>🌡️ Sensor Traktor · S31B-NB</h1>
+      <div class="sub" id="lastup">Esperando primer dato…</div>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill wait" id="status"><span class="dot"></span><span id="status-txt">Conectando…</span></span>
+    <button class="icon-btn" id="theme" title="Cambiar tema">◐</button>
+  </header>
+
+  <div class="tiles">
+    <div class="tile temp"><div class="lbl">Temperatura</div><div class="val" id="t-temp">—<small>°C</small></div><div class="note" id="n-temp"></div></div>
+    <div class="tile hum"><div class="lbl">Humedad</div><div class="val" id="t-hum">—<small>%</small></div><div class="note" id="n-hum"></div></div>
+    <div class="tile"><div class="lbl">Batería</div><div class="val" id="t-bat">—<small>V</small></div><div class="note" id="n-bat"></div></div>
+    <div class="tile"><div class="lbl">Señal</div><div class="val" id="t-sig">—</div><div class="note" id="n-sig"></div></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="swatch" style="background:var(--temp)"></span>Temperatura (°C)</h2>
+    <div class="chart-box"><canvas id="chart-temp"></canvas></div>
+  </div>
+  <div class="card">
+    <h2><span class="swatch" style="background:var(--hum)"></span>Humedad (%)</h2>
+    <div class="chart-box"><canvas id="chart-hum"></canvas></div>
+  </div>
+
+  <details class="table-card">
+    <summary>Últimas lecturas</summary>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>Hora</th><th>Temp (°C)</th><th>Humedad (%)</th></tr></thead>
+        <tbody id="tbody"><tr><td colspan="3" style="text-align:center;color:var(--muted)">sin datos aún</td></tr></tbody>
+      </table>
+    </div>
+  </details>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+/* ================== CONFIG ================== */
+const BROKER = "wss://broker.hivemq.com:8884/mqtt";   // broker público (WebSocket seguro)
+const TOPIC  = "traktor/iso/#";                        // el tópico donde publica el Dragino
+const MAX_POINTS = 48;                                 // puntos que se muestran en los gráficos
+/* ============================================ */
+
+document.getElementById("foot").innerHTML =
+  `Leyendo de <code>${BROKER.replace("wss://","").replace("/mqtt","")}</code> · tópico <code>${TOPIC}</code>`;
+
+/* ---------- Tema ---------- */
+const root = document.documentElement;
+function currentDark(){
+  const t = root.getAttribute("data-theme");
+  if(t==="dark") return true;
+  if(t==="light") return false;
+  return window.matchMedia("(prefers-color-scheme:dark)").matches;
+}
+document.getElementById("theme").onclick = ()=>{
+  root.setAttribute("data-theme", currentDark() ? "light" : "dark");
+  restyleCharts();
+};
+
+/* ---------- Datos ---------- */
+const readings = new Map();          // clave: timestamp string -> {t:Date, temp, hum}
+function parseTime(s){
+  const d = new Date(String(s).replace(/\//g,"-").replace(" ","T")+"Z"); // el device envía UTC
+  return isNaN(d) ? null : d;
+}
+function addPoint(timeStr, temp, hum){
+  const t = parseTime(timeStr);
+  if(!t) return;
+  readings.set(timeStr, {t, temp:Number(temp), hum:Number(hum)});
+}
+function series(){
+  return [...readings.values()].sort((a,b)=>a.t-b.t).slice(-MAX_POINTS);
+}
+
+/* ---------- Gráficos ---------- */
+function css(v){ return getComputedStyle(root).getPropertyValue(v).trim(); }
+function baseOpts(unit){
+  const grid=css("--grid"), tick=css("--muted"), ink=css("--ink-2");
+  return {
+    responsive:true, maintainAspectRatio:false,
+    animation:{duration:300},
+    interaction:{mode:"index", intersect:false},
+    plugins:{ legend:{display:false},
+      tooltip:{ backgroundColor:css("--surface"), titleColor:ink, bodyColor:ink,
+        borderColor:css("--border"), borderWidth:1, padding:10, displayColors:false,
+        callbacks:{ label:(c)=>` ${c.formattedValue} ${unit}` } } },
+    scales:{
+      x:{ grid:{color:grid, drawTicks:false}, border:{display:false},
+          ticks:{color:tick, maxRotation:0, autoSkip:true, maxTicksLimit:6, font:{size:11}} },
+      y:{ grid:{color:grid, drawTicks:false}, border:{display:false},
+          ticks:{color:tick, font:{size:11}, callback:(v)=>v+"" } }
+    }
+  };
+}
+function mkChart(id, color, unit){
+  return new Chart(document.getElementById(id), {
+    type:"line",
+    data:{ labels:[], datasets:[{
+      data:[], borderColor:color, backgroundColor:color+"22",
+      borderWidth:2, tension:.32, fill:true,
+      pointRadius:2, pointHoverRadius:6, pointBackgroundColor:color,
+      pointBorderColor:css("--surface"), pointBorderWidth:1.5,
+      clip:8
+    }]},
+    options: baseOpts(unit)
+  });
+}
+let chTemp = mkChart("chart-temp", css("--temp"), "°C");
+let chHum  = mkChart("chart-hum",  css("--hum"),  "%");
+
+function restyleCharts(){
+  [chTemp,chHum].forEach((c,i)=>{
+    const color = i===0 ? css("--temp") : css("--hum");
+    c.data.datasets[0].borderColor = color;
+    c.data.datasets[0].backgroundColor = color+"22";
+    c.data.datasets[0].pointBackgroundColor = color;
+    c.data.datasets[0].pointBorderColor = css("--surface");
+    c.options = baseOpts(i===0 ? "°C" : "%");
+    c.update();
+  });
+}
+window.matchMedia("(prefers-color-scheme:dark)").addEventListener("change", restyleCharts);
+
+function renderCharts(){
+  const s = series();
+  const labels = s.map(p=>p.t.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}));
+  chTemp.data.labels = labels; chTemp.data.datasets[0].data = s.map(p=>p.temp); chTemp.update();
+  chHum.data.labels  = labels; chHum.data.datasets[0].data  = s.map(p=>p.hum);  chHum.update();
+
+  const tb = document.getElementById("tbody");
+  if(s.length){
+    tb.innerHTML = s.slice(-12).reverse().map(p=>
+      `<tr><td>${p.t.toLocaleString([], {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</td>`+
+      `<td>${p.temp.toFixed(1)}</td><td>${p.hum.toFixed(1)}</td></tr>`).join("");
+  }
+}
+
+/* ---------- Tarjetas ---------- */
+function setTiles(d){
+  if(d.temperature!=null) document.getElementById("t-temp").innerHTML = `${(+d.temperature).toFixed(1)}<small>°C</small>`;
+  if(d.humidity!=null)    document.getElementById("t-hum").innerHTML  = `${(+d.humidity).toFixed(1)}<small>%</small>`;
+  if(d.battery!=null){
+    const b=+d.battery;
+    document.getElementById("t-bat").innerHTML = `${b.toFixed(2)}<small>V</small>`;
+    const el=document.getElementById("n-bat");
+    el.textContent = b>=3.4?"OK":b>=3.2?"media":"baja";
+    el.style.color = b>=3.4?"var(--ok)":b>=3.2?"var(--warn)":"var(--bad)";
+  }
+  if(d.signal!=null){
+    const g=+d.signal;
+    document.getElementById("t-sig").innerHTML = `${g}<small>csq</small>`;
+    const el=document.getElementById("n-sig");
+    el.textContent = g>=15?"buena":g>=10?"media":"baja";
+    el.style.color = g>=15?"var(--ok)":g>=10?"var(--warn)":"var(--bad)";
+  }
+  if(d.time){
+    const t=parseTime(d.time);
+    document.getElementById("lastup").textContent =
+      "Última lectura: " + (t? t.toLocaleString([], {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : d.time);
+  }
+}
+
+/* ---------- Mensaje entrante ---------- */
+function onReading(payload){
+  let d; try{ d=JSON.parse(payload); }catch(e){ return; }
+  if(d.time && d.temperature!=null) addPoint(d.time, d.temperature, d.humidity);
+  for(const k of Object.keys(d)){                    // histórico buffereado ("1".."8")
+    if(/^\d+$/.test(k) && Array.isArray(d[k]) && d[k].length>=3) addPoint(d[k][2], d[k][0], d[k][1]);
+  }
+  setTiles(d);
+  renderCharts();
+}
+
+/* ---------- Estado de conexión ---------- */
+function status(cls, txt){
+  const p=document.getElementById("status");
+  p.className="pill "+cls;
+  document.getElementById("status-txt").textContent=txt;
+}
+
+/* ---------- MQTT ---------- */
+const client = mqtt.connect(BROKER, {
+  clientId:"traktor-web-"+Math.random().toString(16).slice(2,8),
+  clean:true, reconnectPeriod:4000, connectTimeout:8000
+});
+client.on("connect", ()=>{ status("live","En vivo"); client.subscribe(TOPIC); });
+client.on("reconnect",()=> status("wait","Reconectando…"));
+client.on("close",    ()=> status("down","Desconectado"));
+client.on("error",    ()=> status("down","Error"));
+client.on("message",  (_t,msg)=> onReading(msg.toString()));
+</script>
+</body>
+</html>
